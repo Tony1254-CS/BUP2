@@ -15,7 +15,7 @@ from app.constants import GRIDWISE_TOL
 from app.schemas import BatteryInput, DirectiveInterpretation, HourInput
 from app.optimizer import solve
 
-TOL = GRIDWISE_TOL
+
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -93,21 +93,21 @@ class TestCoreConstraints:
             d = entry.battery_kwh if entry.battery_action == "discharge" else 0
             supply = entry.grid_kwh + entry.solar_used_kwh + d
             load = hrs[entry.hour].demand_kwh + c
-            assert abs(supply - load) <= TOL, f"Hour {entry.hour}: balance broken"
+            assert abs(supply - load) <= GRIDWISE_TOL, f"Hour {entry.hour}: balance broken"
 
     def test_battery_bounds(self):
         hrs = _make_hours()
         bat = _make_battery()
         plan = solve(hrs, bat, _no_op_directives())
         for entry in plan:
-            assert entry.battery_energy_after_kwh >= bat.minimum_energy_kwh - TOL
-            assert entry.battery_energy_after_kwh <= bat.capacity_kwh + TOL
+            assert entry.battery_energy_after_kwh >= bat.minimum_energy_kwh - GRIDWISE_TOL
+            assert entry.battery_energy_after_kwh <= bat.capacity_kwh + GRIDWISE_TOL
 
     def test_end_of_day_neutrality(self):
         hrs = _make_hours()
         bat = _make_battery()
         plan = solve(hrs, bat, _no_op_directives())
-        assert abs(plan[23].battery_energy_after_kwh - bat.initial_energy_kwh) <= TOL
+        assert abs(plan[23].battery_energy_after_kwh - bat.initial_energy_kwh) <= GRIDWISE_TOL
 
     def test_no_simultaneous_charge_discharge(self):
         hrs = _make_hours()
@@ -133,7 +133,7 @@ class TestCoreConstraints:
             # Should use battery discharge or solar to offset expensive grid
             # (exact values depend on battery constraints, but grid should be
             # less than or equal to what it would be without battery)
-            assert entry.grid_kwh <= 100.0 + TOL  # at most demand
+            assert entry.grid_kwh <= 100.0 + GRIDWISE_TOL  # at most demand
 
 
 # ── Directive constraint tests ────────────────────────────────────────────
@@ -146,7 +146,7 @@ class TestDirectiveConstraints:
         for h in [10, 11, 12]:
             entry = plan[h]
             if entry.battery_action == "charge":
-                assert entry.battery_kwh <= TOL
+                assert entry.battery_kwh <= GRIDWISE_TOL
 
     def test_no_discharge_window(self):
         hrs = _make_hours()
@@ -155,28 +155,28 @@ class TestDirectiveConstraints:
         for h in [10, 11, 12]:
             entry = plan[h]
             if entry.battery_action == "discharge":
-                assert entry.battery_kwh <= TOL
+                assert entry.battery_kwh <= GRIDWISE_TOL
 
     def test_max_grid_window(self):
         hrs = _make_hours()
         bat = _make_battery()
         plan = solve(hrs, bat, [_max_grid([10, 11, 12], 80.0)])
         for h in [10, 11, 12]:
-            assert plan[h].grid_kwh <= 80.0 + TOL
+            assert plan[h].grid_kwh <= 80.0 + GRIDWISE_TOL
 
     def test_solar_reduction(self):
         hrs = _make_hours(solar=100.0)
         bat = _make_battery()
         plan = solve(hrs, bat, [_solar_reduction([10, 11, 12], 0.3)])
         for h in [10, 11, 12]:
-            assert plan[h].solar_used_kwh <= 100.0 * 0.3 + TOL
+            assert plan[h].solar_used_kwh <= 100.0 * 0.3 + GRIDWISE_TOL
 
     def test_minimum_battery_reserve(self):
         hrs = _make_hours()
         bat = _make_battery()
         plan = solve(hrs, bat, [_min_reserve(list(range(24)), 200.0)])
         for entry in plan:
-            assert entry.battery_energy_after_kwh >= 200.0 - TOL
+            assert entry.battery_energy_after_kwh >= 200.0 - GRIDWISE_TOL
 
 
 # ── Varying scenario tests ────────────────────────────────────────────────
@@ -191,18 +191,18 @@ class TestVaryingScenarios:
             d = entry.battery_kwh if entry.battery_action == "discharge" else 0
             supply = entry.grid_kwh + entry.solar_used_kwh + d
             load = 300.0 + c
-            assert abs(supply - load) <= TOL
+            assert abs(supply - load) <= GRIDWISE_TOL
 
     def test_zero_solar(self):
         hrs = _make_hours(demand=100.0, solar=0.0)
         bat = _make_battery()
         plan = solve(hrs, bat, _no_op_directives())
         for entry in plan:
-            assert entry.solar_used_kwh <= TOL
+            assert entry.solar_used_kwh <= GRIDWISE_TOL
 
     def test_zero_demand_is_feasible(self):
         hrs = _make_hours(demand=0.0, solar=0.0)
         bat = _make_battery()
         plan = solve(hrs, bat, _no_op_directives())
         for entry in plan:
-            assert entry.grid_kwh <= TOL
+            assert entry.grid_kwh <= GRIDWISE_TOL

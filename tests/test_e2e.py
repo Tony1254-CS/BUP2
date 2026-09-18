@@ -21,7 +21,7 @@ from app.constants import GRIDWISE_TOL
 
 client = TestClient(app)
 
-TOL = GRIDWISE_TOL
+
 
 
 def _make_payload(scenario_id="TEST-1", notes=None, demand=100.0, solar=50.0, tariff=5.0):
@@ -107,9 +107,9 @@ def test_totals_consistent():
         sum(p["grid_kwh"] * hours[p["hour"]]["tariff_bdt_per_kwh"] for p in plan), 2
     )
     peak = max(p["grid_kwh"] for p in plan)
-    assert abs(body["total_grid_kwh"] - total_grid) <= TOL
-    assert abs(body["total_cost_bdt"] - total_cost) <= TOL
-    assert abs(body["peak_grid_kwh"] - peak) <= TOL
+    assert abs(body["total_grid_kwh"] - total_grid) <= GRIDWISE_TOL
+    assert abs(body["total_cost_bdt"] - total_cost) <= GRIDWISE_TOL
+    assert abs(body["peak_grid_kwh"] - peak) <= GRIDWISE_TOL
 
 
 def test_verifier_is_called(monkeypatch):
