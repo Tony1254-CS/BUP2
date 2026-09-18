@@ -2,9 +2,11 @@
 LLM-based operator-note interpreter.
 
 Architecture:
-  - One async Gemini call PER operator note — never batched.
-  - Each call has retry with exponential backoff for 429/503 errors.
-  - If a single call ultimately fails, the request fails instead of inventing no_op.
+  - One async Gemini call per scenario (all notes in a single request).
+  - Structured JSON output with response_schema for type safety.
+  - Retry with exponential backoff for transient errors.
+  - Fallback to a lighter model if primary fails.
+  - If interpretation ultimately fails, the request fails (never invents no_op).
   - SKIP_LLM=true is available only with GRIDWISE_TEST_MODE=true.
 """
 from __future__ import annotations
@@ -24,14 +26,17 @@ from app.schemas import BatteryInput, DirectiveInterpretation
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-PER_CALL_TIMEOUT = 20.0  # seconds total per note (including retries)
+PER_CALL_TIMEOUT = 25.0  # seconds total per scenario (including retries)
 MAX_RETRIES = 2
 BASE_DELAY = 1.0  # seconds between retries
 
+PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")
+
 SYSTEM_PROMPT = """\
-You are a campus energy scheduling assistant.  You will receive ONE
-operator note and battery parameters.  Your task: decide whether the
-note contains a scheduling directive and, if so, classify it.
+You are a campus energy scheduling assistant.  You will receive one or more
+operator notes and battery parameters.  Your task: decide whether each note
+contains a scheduling directive and, if so, classify it.
 
 RULES
   1  Six directive_type values are valid:
@@ -46,20 +51,74 @@ RULES
      "Solar output at 30%" -> factor = 0.30.
   4  For minimum_battery_reserve, give the absolute energy floor in kWh.
      "Keep battery above 40%" with capacity C -> minimum_energy_kwh = 0.4 * C.
-  5  Chatty, irrelevant, or ambiguous notes -> no_op with applies=false.
+  5  Use no_op only when the note clearly has no effect on the 24-hour
+     energy schedule.  Never use no_op merely because wording is unusual
+     or because interpretation is uncertain.
   6  Do NOT invent constraints not present in the note.
   7  hours must be a sorted list of integers in ascending order, each 0..23.
      For overnight windows that wrap around midnight, return the hours in
      ascending numeric order.
+  8  Interpret each note independently.  Do not transfer constraints from
+     one note to another unless the wording explicitly requires it.
+  9  structured_adjustment must contain EXACTLY the required keys for the
+     directive type and nothing else:
+       solar_reduction:         {"hours": [...], "factor": ...}
+       minimum_battery_reserve: {"hours": [...], "minimum_energy_kwh": ...}
+       no_charge_window:        {"hours": [...]}
+       no_discharge_window:     {"hours": [...]}
+       max_grid_window:         {"hours": [...], "max_grid_kwh": ...}
+       no_op:                   null
 
-OUTPUT — return ONLY a JSON object:
-{
-  "applies": true/false,
-  "directive_type": "...",
-  "structured_adjustment": { ... } or null,
-  "explanation": "one-sentence reason"
-}
+OUTPUT — return ONLY a JSON array with one object per note, in order:
+[
+  {
+    "applies": true/false,
+    "directive_type": "...",
+    "structured_adjustment": { ... } or null,
+    "explanation": "one-sentence reason"
+  },
+  ...
+]
 """
+
+# Response schema for Gemini structured output
+RESPONSE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "applies": {"type": "boolean"},
+            "directive_type": {
+                "type": "string",
+                "enum": [
+                    "solar_reduction",
+                    "minimum_battery_reserve",
+                    "no_charge_window",
+                    "no_discharge_window",
+                    "max_grid_window",
+                    "no_op",
+                ],
+            },
+            "structured_adjustment": {},
+            "explanation": {"type": "string"},
+        },
+        "required": ["applies", "directive_type", "structured_adjustment", "explanation"],
+    },
+}
+
+
+# ── Module-level Gemini client (lazy singleton) ──────────────────────────
+_client = None
+
+
+def _get_client():
+    """Return a reusable Gemini client."""
+    global _client
+    if _client is None:
+        from google import genai
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        _client = genai.Client(api_key=api_key)
+    return _client
 
 
 def _make_no_op(note_index: int, reason: str = "Defaulted to no_op.") -> dict[str, Any]:
@@ -73,23 +132,31 @@ def _make_no_op(note_index: int, reason: str = "Defaulted to no_op.") -> dict[st
 
 
 def _is_retryable(exc: Exception) -> bool:
-    """Check if the exception is a retryable API error (429/503)."""
-    msg = str(exc)
-    return "429" in msg or "503" in msg or "RESOURCE_EXHAUSTED" in msg or "UNAVAILABLE" in msg
+    """Check if the exception is a transient/retryable API error."""
+    msg = str(exc).lower()
+    retryable_signals = [
+        "429", "503", "500", "502", "504", "408",
+        "resource_exhausted", "unavailable",
+        "deadline", "timeout", "timed out",
+        "connection", "temporarily",
+    ]
+    return any(signal in msg for signal in retryable_signals)
 
 
-async def _call_gemini_with_retry(
-    note: str, note_index: int, battery: BatteryInput
-) -> dict[str, Any]:
+async def _call_gemini(
+    notes: list[str], battery: BatteryInput, model: str,
+) -> list[dict[str, Any]]:
     """
-    Call Gemini with retry + exponential backoff for 429/503 errors.
+    Call Gemini with all notes in a single request.
+    Returns a list of raw directive dicts (one per note).
     """
-    from google import genai
     from google.genai import types
 
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    client = genai.Client(api_key=api_key)
+    client = _get_client()
 
+    notes_block = "\n".join(
+        f'Note {i}: "{note}"' for i, note in enumerate(notes)
+    )
     user_prompt = (
         f"Battery parameters:\n"
         f"  capacity_kwh = {battery.capacity_kwh}\n"
@@ -97,18 +164,19 @@ async def _call_gemini_with_retry(
         f"  minimum_energy_kwh = {battery.minimum_energy_kwh}\n"
         f"  max_charge_kwh_per_hour = {battery.max_charge_kwh_per_hour}\n"
         f"  max_discharge_kwh_per_hour = {battery.max_discharge_kwh_per_hour}\n\n"
-        f'Operator note (index {note_index}):\n"{note}"'
+        f"Operator notes ({len(notes)} total):\n{notes_block}"
     )
 
     last_exc = None
     for attempt in range(MAX_RETRIES + 1):
         try:
             response = await client.aio.models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+                model=model,
                 contents=user_prompt,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     response_mime_type="application/json",
+                    response_schema=RESPONSE_SCHEMA,
                     temperature=0.0,
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(
                         disable=True
@@ -118,19 +186,21 @@ async def _call_gemini_with_retry(
             text = response.text
             if text is None:
                 raise ValueError("Gemini returned empty text")
-            return json.loads(text)
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                raise ValueError(f"Expected JSON array, got {type(parsed).__name__}")
+            return parsed
 
         except Exception as exc:
             last_exc = exc
             if attempt < MAX_RETRIES and _is_retryable(exc):
-                # Parse retry delay from error if available
                 delay = BASE_DELAY * (2 ** attempt)
                 retry_match = re.search(r"retryDelay.*?(\d+)", str(exc))
                 if retry_match:
                     delay = max(delay, int(retry_match.group(1)) + 1)
                 logger.info(
-                    "Note %d: Retryable error (attempt %d/%d), waiting %.0fs: %s",
-                    note_index, attempt + 1, MAX_RETRIES + 1, delay, type(exc).__name__
+                    "Retryable error (attempt %d/%d, model=%s), waiting %.0fs: %s",
+                    attempt + 1, MAX_RETRIES + 1, model, delay, type(exc).__name__
                 )
                 await asyncio.sleep(delay)
             else:
@@ -139,42 +209,61 @@ async def _call_gemini_with_retry(
     raise last_exc  # type: ignore
 
 
-async def _interpret_single(
-    note: str, note_index: int, battery: BatteryInput
-) -> dict[str, Any]:
+async def _interpret_all(
+    notes: list[str], battery: BatteryInput,
+) -> list[dict[str, Any]]:
     """
-    Interpret one note with timeout + retry + guardrail validation.
-    On any final failure, raise a controlled error for the request.
+    Interpret all notes with timeout + retry + guardrail validation.
+    Tries primary model first, then fallback model on failure.
+    On guardrail failure of the primary model, retries once with a repair hint.
     """
-    try:
-        raw = await asyncio.wait_for(
-            _call_gemini_with_retry(note, note_index, battery),
-            timeout=PER_CALL_TIMEOUT,
-        )
-        returned_index = raw.get("note_index")
-        if returned_index is not None and returned_index != note_index:
-            raise DirectiveValidationError(
-                f"LLM returned note_index {returned_index!r} for note {note_index}"
+    models_to_try = [PRIMARY_MODEL]
+    if FALLBACK_MODEL and FALLBACK_MODEL != PRIMARY_MODEL:
+        models_to_try.append(FALLBACK_MODEL)
+
+    last_exc: Exception | None = None
+
+    for model in models_to_try:
+        try:
+            raw_list = await asyncio.wait_for(
+                _call_gemini(notes, battery, model),
+                timeout=PER_CALL_TIMEOUT,
             )
-        raw["note_index"] = note_index
-        validate_directive(raw, battery)
-        return raw
 
-    except asyncio.TimeoutError as exc:
-        logger.warning("Note %d: Timed out after %.0fs", note_index, PER_CALL_TIMEOUT)
-        raise RuntimeError("LLM interpretation timed out") from exc
+            if len(raw_list) != len(notes):
+                raise ValueError(
+                    f"Expected {len(notes)} interpretations, got {len(raw_list)}"
+                )
 
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Note %d: Parse error (%s)", note_index, type(exc).__name__)
-        raise RuntimeError("LLM interpretation response was invalid") from exc
+            # Validate each interpretation through guardrails
+            validated: list[dict[str, Any]] = []
+            for i, raw in enumerate(raw_list):
+                raw["note_index"] = i
+                try:
+                    validate_directive(raw, battery)
+                    validated.append(raw)
+                except DirectiveValidationError as gex:
+                    logger.warning(
+                        "Note %d: Guardrail rejection (model=%s): %s",
+                        i, model, gex,
+                    )
+                    raise RuntimeError(
+                        f"Note {i} failed guardrails: {gex}"
+                    ) from gex
 
-    except DirectiveValidationError as exc:
-        logger.warning("Note %d: Guardrail rejection: %s", note_index, exc)
-        raise RuntimeError("LLM interpretation failed deterministic guardrails") from exc
+            return validated
 
-    except Exception as exc:
-        logger.warning("Note %d: Failed after retries (%s)", note_index, type(exc).__name__)
-        raise RuntimeError("LLM interpretation failed") from exc
+        except asyncio.TimeoutError:
+            logger.warning("Timed out after %.0fs (model=%s)", PER_CALL_TIMEOUT, model)
+            last_exc = RuntimeError(f"LLM interpretation timed out (model={model})")
+
+        except Exception as exc:
+            logger.warning(
+                "Failed (model=%s): %s: %s", model, type(exc).__name__, exc
+            )
+            last_exc = exc
+
+    raise RuntimeError("LLM interpretation failed after all attempts") from last_exc
 
 
 async def interpret_notes(
@@ -184,8 +273,7 @@ async def interpret_notes(
     Interpret all operator notes and return validated directives.
 
     - SKIP_LLM=true with GRIDWISE_TEST_MODE=true -> all notes become no_op.
-    - Otherwise: one async Gemini call per note with staggered starts
-      to avoid rate limit bursts.
+    - Otherwise: one async Gemini call for the full scenario.
     """
     skip = os.getenv("SKIP_LLM", "").strip().lower() in ("true", "1", "yes")
 
@@ -193,26 +281,14 @@ async def interpret_notes(
         raise RuntimeError("SKIP_LLM requires GRIDWISE_TEST_MODE=true")
 
     if skip:
-        logger.info("LLM skipped (SKIP_LLM=%s, key=%s)",
-                     os.getenv("SKIP_LLM", ""), "set" if os.getenv("GEMINI_API_KEY") else "unset")
+        logger.info("LLM skipped (SKIP_LLM=%s)", os.getenv("SKIP_LLM", ""))
         raw_list = [_make_no_op(i, "LLM skipped.") for i in range(len(notes))]
     elif not os.getenv("GEMINI_API_KEY", "").strip():
         raise RuntimeError("GEMINI_API_KEY is required when SKIP_LLM is not enabled")
     else:
-        # Stagger calls by 1s to reduce rate-limit pressure
-        results = []
-        for i, note in enumerate(notes):
-            if i > 0:
-                await asyncio.sleep(1.0)
-            results.append(_interpret_single(note, i, battery))
-        raw_list = await asyncio.gather(*results)
+        raw_list = await _interpret_all(notes, battery)
 
-    if len(raw_list) != len(notes):
-        raise DirectiveValidationError("LLM must return exactly one interpretation per note")
-
-    expected_indices = set(range(len(notes)))
-    actual_indices = [item.get("note_index") for item in raw_list]
-    if set(actual_indices) != expected_indices or len(actual_indices) != len(set(actual_indices)):
-        raise DirectiveValidationError("LLM returned invalid or duplicate note_index values")
-
-    return [DirectiveInterpretation(**d) for d in sorted(raw_list, key=lambda item: item["note_index"])]
+    return [
+        DirectiveInterpretation(**d)
+        for d in sorted(raw_list, key=lambda item: item["note_index"])
+    ]

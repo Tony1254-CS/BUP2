@@ -21,7 +21,7 @@ def verify_schedule_compliance(
     Returns (is_valid, list_of_violations).
     """
     violations = []
-    TOLERANCE = 0.02  # Absolute tolerance
+    TOLERANCE = 0.01  # Official absolute tolerance (kWh / BDT)
 
     # 1. Check hours count
     if len(response.hourly_plan) != 24:

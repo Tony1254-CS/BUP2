@@ -73,7 +73,7 @@ def _apply_directives(
     min_reserve = [battery.minimum_energy_kwh] * N
     max_charge = [battery.max_charge_kwh_per_hour] * N
     max_discharge = [battery.max_discharge_kwh_per_hour] * N
-    max_grid = [1e9] * N  # effectively uncapped unless directive says otherwise
+    max_grid = [hours_by_id[h].demand_kwh + battery.max_charge_kwh_per_hour for h in range(N)]
 
     for d in directives:
         if not d.applies or d.structured_adjustment is None:
@@ -138,9 +138,6 @@ def solve(
     c_obj = np.zeros(N_VAR)
     for h in range(N):
         c_obj[_vi(h, G)] = tariff[h]
-        # Tiny penalty on binary flags so solver prefers idle when cost-free
-        c_obj[_vi(h, IC)] = 1e-7
-        c_obj[_vi(h, ID)] = 1e-7
 
     # ── Bounds ────────────────────────────────────────────────────────────
     lb = np.zeros(N_VAR)
@@ -227,7 +224,7 @@ def solve(
         constraints=constraints,
         integrality=integrality,
         bounds=Bounds(lb, ub),
-        options={"time_limit": 10},
+        options={"time_limit": 10, "mip_rel_gap": 0.0},
     )
 
     if not result.success:

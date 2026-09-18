@@ -135,6 +135,22 @@ def validate_directive(raw: dict[str, Any], battery: BatteryInput) -> None:
         # Only hours required — already validated above
         pass
 
+    # ── exact key-set enforcement ─────────────────────────────────────────
+    _ALLOWED_KEYS: dict[str, set[str]] = {
+        "solar_reduction":         {"hours", "factor"},
+        "minimum_battery_reserve": {"hours", "minimum_energy_kwh"},
+        "no_charge_window":        {"hours"},
+        "no_discharge_window":     {"hours"},
+        "max_grid_window":         {"hours", "max_grid_kwh"},
+    }
+    expected_keys = _ALLOWED_KEYS[dtype]
+    actual_keys = set(adj.keys())
+    if actual_keys != expected_keys:
+        raise DirectiveValidationError(
+            f"{dtype}: structured_adjustment must have exactly {sorted(expected_keys)}, "
+            f"got {sorted(actual_keys)}"
+        )
+
 
 def _validate_hours(hours: Any, dtype: str) -> None:
     """Validate the hours array per spec interpretation_rules."""

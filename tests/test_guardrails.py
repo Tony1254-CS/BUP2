@@ -155,3 +155,52 @@ class TestInvalidDirectives:
              "structured_adjustment": None, "explanation": "x"}
         with pytest.raises(DirectiveValidationError, match="dict"):
             validate_directive(d, BAT)
+
+
+# ── Extra-key rejection (Issue #6) ───────────────────────────────────────
+
+class TestExtraKeyRejection:
+    """structured_adjustment must contain EXACTLY the required keys."""
+
+    def test_solar_extra_key_rejected(self):
+        d = {"applies": True, "directive_type": "solar_reduction",
+             "structured_adjustment": {"hours": [10], "factor": 0.2, "max_grid_kwh": 99999},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError, match="exactly"):
+            validate_directive(d, BAT)
+
+    def test_no_charge_extra_key_rejected(self):
+        d = {"applies": True, "directive_type": "no_charge_window",
+             "structured_adjustment": {"hours": [10], "factor": 0.5},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError, match="exactly"):
+            validate_directive(d, BAT)
+
+    def test_reserve_extra_key_rejected(self):
+        d = {"applies": True, "directive_type": "minimum_battery_reserve",
+             "structured_adjustment": {"hours": [10], "minimum_energy_kwh": 100, "extra": 1},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError, match="exactly"):
+            validate_directive(d, BAT)
+
+    def test_max_grid_extra_key_rejected(self):
+        d = {"applies": True, "directive_type": "max_grid_window",
+             "structured_adjustment": {"hours": [13], "max_grid_kwh": 300, "factor": 0.5},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError, match="exactly"):
+            validate_directive(d, BAT)
+
+    def test_no_discharge_extra_key_rejected(self):
+        d = {"applies": True, "directive_type": "no_discharge_window",
+             "structured_adjustment": {"hours": [0, 1], "minimum_energy_kwh": 100},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError, match="exactly"):
+            validate_directive(d, BAT)
+
+    def test_solar_missing_key_rejected(self):
+        """Missing required key should also fail exact-key check."""
+        d = {"applies": True, "directive_type": "solar_reduction",
+             "structured_adjustment": {"hours": [10]},
+             "explanation": "x"}
+        with pytest.raises(DirectiveValidationError):
+            validate_directive(d, BAT)
