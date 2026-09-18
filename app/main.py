@@ -81,15 +81,15 @@ def _compute_totals(
         total_cost += g * hours_by_id[entry.hour].tariff_bdt_per_kwh
         if g > peak_grid:
             peak_grid = g
-    return round(total_grid, 2), round(total_cost, 2), round(peak_grid, 2)
+    return total_grid, total_cost, peak_grid
 
 
 def _build_summary(
     total_cost: float, total_grid: float, peak: float, n_directives: int
 ) -> str:
     return (
-        f"Optimised 24-hour schedule: total grid import {total_grid} kWh, "
-        f"cost {total_cost} BDT, peak hour grid {peak} kWh. "
+        f"Optimised 24-hour schedule: total grid import {total_grid:.2f} kWh, "
+        f"cost {total_cost:.2f} BDT, peak hour grid {peak:.2f} kWh. "
         f"{n_directives} directive(s) applied."
     )
 
