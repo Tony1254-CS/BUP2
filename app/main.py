@@ -12,6 +12,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import JSONResponse
 
 from app import verifier
@@ -53,9 +54,11 @@ async def request_validation_error(
     return JSONResponse(status_code=400, content={"detail": details})
 
 
-@app.exception_handler(RuntimeError)
-async def runtime_error(request: Request, exc: RuntimeError) -> JSONResponse:
-    logger.error("Request failed with controlled runtime error: %s", type(exc).__name__)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    if isinstance(exc, StarletteHTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    logger.error("Request failed with unhandled exception: %s", type(exc).__name__, exc_info=exc)
     return JSONResponse(
         status_code=500,
         content={"detail": "The optimization service could not complete the request."},
