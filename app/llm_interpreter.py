@@ -128,7 +128,6 @@ async def _call_gemini(
         f"  max_discharge_kwh_per_hour = {battery.max_discharge_kwh_per_hour}\n\n"
         f"Operator notes ({len(notes)} total):\n{notes_block}"
     )
-
     if repair_error:
         user_prompt += f"\n\nYOUR PREVIOUS OUTPUT FAILED VALIDATION:\n{repair_error}\nPlease fix the output to comply strictly with the rules."
 
@@ -178,17 +177,16 @@ async def _interpret_all(
                 raw_list = await _call_gemini(notes, battery, PRIMARY_MODEL)
                 return _validate_all(raw_list, notes, battery, PRIMARY_MODEL)
             except Exception as e:
-                # Attempt 2: Repair with Primary
                 if isinstance(e, RuntimeError) and "failed guardrails" in str(e):
                     try:
                         raw_list = await _call_gemini(notes, battery, PRIMARY_MODEL, repair_error=str(e))
                         return _validate_all(raw_list, notes, battery, PRIMARY_MODEL)
                     except Exception:
-                        pass # Fall through to fallback
+                        pass
                 else:
-                    pass # Fall through to fallback
+                    pass
             
-            # Attempt 3: Fallback (Once)
+            # Attempt 3: Fallback
             raw_list = await _call_gemini(notes, battery, FALLBACK_MODEL)
             return _validate_all(raw_list, notes, battery, FALLBACK_MODEL)
             
