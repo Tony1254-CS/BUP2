@@ -7,7 +7,7 @@ without LLM dependency.
 """
 import os
 
-import pytest
+
 from fastapi.testclient import TestClient
 
 # Force LLM skip for e2e tests

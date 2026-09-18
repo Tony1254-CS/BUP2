@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 from typing import Any
 
 from dotenv import load_dotenv
@@ -13,7 +12,7 @@ from app.schemas import BatteryInput, DirectiveInterpretation
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-GLOBAL_TIMEOUT = 4.5  # Strict budget to ensure p95 < 5s
+GLOBAL_TIMEOUT = 8.0  # Increased budget to allow for Vercel cold starts
 
 PRIMARY_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite")

@@ -1,5 +1,5 @@
 import asyncio
-import os
+
 import pytest
 from app.llm_interpreter import interpret_notes
 from app.schemas import BatteryInput

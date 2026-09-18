@@ -1,5 +1,4 @@
-import math
-from typing import List, Dict, Any, Tuple
+from typing import List, Tuple
 from app.schemas import (
     DirectiveInterpretation,
     HourInput,
@@ -89,8 +88,7 @@ def verify_schedule_compliance(
             violations.append(f"Hour {h} missing in hourly_plan")
             continue
 
-        demand = hours_by_id[h].demand_kwh
-        tariff = hours_by_id[h].tariff_bdt_per_kwh
+
 
         # Non-negative checks
         if item.grid_kwh < -GRIDWISE_TOL or item.solar_used_kwh < -GRIDWISE_TOL or item.battery_kwh < -GRIDWISE_TOL:
@@ -137,6 +135,16 @@ def verify_schedule_compliance(
 
         # Update for next hour
         current_energy = item.battery_energy_after_kwh
+        recalc_grid += item.grid_kwh
+        recalc_cost += item.grid_kwh * hours_by_id[h].tariff_bdt_per_kwh
+        if item.grid_kwh > recalc_peak:
+            recalc_peak = item.grid_kwh
+
+    # 4. End-of-day battery neutrality
+    if abs(current_energy - battery.initial_energy_kwh) > GRIDWISE_TOL:
+        violations.append(f"End-of-day neutrality broken: final={current_energy:.2f} != initial={battery.initial_energy_kwh:.2f}")
+
+    # Totals are checked when verifying a completed response. The production
     # endpoint disables this for its provisional response so totals are
     # computed only after the schedule itself passes replay.
     if check_totals:

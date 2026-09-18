@@ -9,7 +9,7 @@ Verifies:
   - directive constraints obeyed
   - objective is pure grid cost
 """
-import pytest
+
 
 from app.constants import GRIDWISE_TOL
 from app.schemas import BatteryInput, DirectiveInterpretation, HourInput
