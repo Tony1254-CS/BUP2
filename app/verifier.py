@@ -20,8 +20,9 @@ def verify_schedule_compliance(
     Replays the hourly_plan against all GridWise rules and active directives.
     Returns (is_valid, list_of_violations).
     """
+    from app.constants import GRIDWISE_TOL
     violations = []
-    TOLERANCE = 0.01  # Official absolute tolerance (kWh / BDT)
+    TOLERANCE = GRIDWISE_TOL
 
     # 1. Check hours count
     if len(response.hourly_plan) != 24:
