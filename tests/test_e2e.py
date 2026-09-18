@@ -19,7 +19,7 @@ import app.main as main_module
 from app import verifier
 from app.constants import GRIDWISE_TOL
 
-client = TestClient(app)
+client = TestClient(app, raise_server_exceptions=False)
 
 
 
